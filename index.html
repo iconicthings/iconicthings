@@ -307,19 +307,18 @@
     <!-- ================= JAVASCRIPT ARCHITECTURE ENGINE ================= -->
     <script>
         // 1. DATA PULL & INITIALIZATION
-        // The `getRegistry` function is the single source of truth for accessing the database
-        // from the backend server.
-        async function getRegistry() {
+        // The `getRegistry` function is the single source of truth for accessing the database,
+        // which is stored in the browser's localStorage.
+        function getRegistry() {
+            let registry = [];
             try {
-                const response = await fetch('/api/registry');
-                if (!response.ok) throw new Error('Failed to fetch registry from server.');
-                const registry = await response.json();
-                return registry || [];
+                registry = JSON.parse(localStorage.getItem('itg_registry')) || [];
             } catch (e) {
-                console.error("Error fetching registry:", e);
-                alert("Could not connect to the registry database. Please check your connection and try again.");
-                return [];
+                console.error("Error parsing registry from localStorage:", e);
+                // If parsing fails, default to an empty array to prevent app crash.
+                registry = [];
             }
+            return registry;
         }
 
         // 2. VIEW CHANGING CONTROLLER
@@ -336,8 +335,8 @@
                 // Apply active styles to the search button and default styles to the add button.
                 btnSearch.className = "px-4 py-2 rounded-lg text-sm font-medium bg-green-600 text-slate-950 font-semibold shadow-lg shadow-green-600/10";
                 btnAdd.className = "px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-white";
-                document.getElementById('grading-form').onsubmit = saveItem; // Ensure form is for saving
-                initializeRegistryView(); // Reload dataset changes to reflect any additions/updates/deletions.
+                document.getElementById('grading-form').onsubmit = saveItem; // Ensure form is for saving                
+                renderRegistry(); // Reload dataset changes to reflect any additions/updates/deletions.
                 resetFormState(); // Ensure the form is reset when navigating away from the add page.
             } else {
                 // Apply active styles to the add button and default styles to the search button.
@@ -348,11 +347,13 @@
         }
 
         // 3. TABULAR RENDERING COMPONENT (One Line per Added Collection Item)
-        function renderRegistry(data, totalCount) {
+        function renderRegistry(filteredData = null) {
             const tbody = document.getElementById('collection-rows');
             const emptyState = document.getElementById('empty-state'); 
             const statsEl = document.getElementById('registry-stats');
-            
+            const data = filteredData || getRegistry();
+            const totalCount = getRegistry().length; // Get the total count before filtering
+
             tbody.innerHTML = '';
 
             // Update statistics text
@@ -407,12 +408,12 @@
         }
 
         // 4. REALTIME SEARCH ARCHITECTURE (Evaluates multi-column queries + Country keys)
-        async function filterCollection() {
+        function filterCollection() {
             const query = document.getElementById('search-input').value.toLowerCase().trim();
             const countryFilter = document.getElementById('country-filter').value.toLowerCase().trim();
-            const registry = await getRegistry();
+            const registry = getRegistry();
 
-            const filteredData = registry.filter(item => {
+            const filtered = registry.filter(item => {
                 const matchesSearch = item.serial.toLowerCase().includes(query) || 
                                       item.description.toLowerCase().includes(query) || 
                                       (item.denomination && item.denomination.toLowerCase().includes(query)) ||
@@ -426,47 +427,58 @@
                 return matchesSearch && matchesCountry;
             });
 
-            renderRegistry(filteredData, registry.length);
+            renderRegistry(filtered);
         }
 
         // 4.5 DATA INTEGRITY & PORTABILITY ENGINE
         function exportRegistry() {
-            // The backend handles the creation of the backup file.
-            window.location.href = '/api/registry/export';
+            const registry = getRegistry();
+            if (registry.length === 0) {
+                alert("Your registry is empty. There is nothing to back up.");
+                return;
+            }
+
+            const data = JSON.stringify(registry, null, 2); // Pretty-print for readability
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `ITG_Backup_${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
         }
 
         function triggerImport() { document.getElementById('import-input').click(); }
 
-        async function handleImport(event) {
+        function handleImport(event) {
             const file = event.target.files[0];
             if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const imported = JSON.parse(e.target.result);
+                    if (!Array.isArray(imported)) throw new Error();
+                    
+                    if (confirm(`This will import ${imported.length} records. Are you sure you want to merge this with your current registry?`)) {
+                        let currentRegistry = getRegistry();
+                        let newItemsCount = 0;
+                        
+                        // Create a map of existing serials for quick lookup
+                        const existingSerials = new Set(currentRegistry.map(item => item.serial));
 
-            if (!confirm("Are you sure you want to restore from this backup? This will merge the records with the current database.")) {
-                event.target.value = ''; // Reset file input
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('backup', file);
-
-            try {
-                const response = await fetch('/api/registry/import', {
-                    method: 'POST',
-                    body: formData,
-                });
-
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.message || 'Import failed.');
-                }
-
-                alert('Database restored and merged successfully.');
-                initializeRegistryView();
-            } catch (error) {
-                console.error('Import error:', error);
-                alert(`Error during import: ${error.message}`);
-            }
-
+                        imported.forEach(item => {
+                            if (item.serial && !existingSerials.has(item.serial)) {
+                                currentRegistry.unshift(item); // Add new items to the top
+                                newItemsCount++;
+                            }
+                        });
+                        localStorage.setItem('itg_registry', JSON.stringify(currentRegistry));
+                        renderRegistry();
+                        alert("Database restored and merged successfully.");
+                    }
+                } catch { alert("Invalid ITG backup file."); }
+            };
+            reader.readAsText(file);
             event.target.value = '';
         }
 
@@ -483,9 +495,8 @@
         }
 
         // Function to display the detail card for a specific banknote
-        async function viewItem(id) {
-            const registry = await getRegistry();
-            const item = registry.find(i => i.id === id);
+        function viewItem(id) {
+            const item = getRegistry().find(i => i.id === id);
             if (!item) return;
 
             document.getElementById('detail-description').innerText = item.description || "No Description";
@@ -563,31 +574,24 @@
                 quality: document.getElementById('form-quality').value.trim().toUpperCase()
             };
 
-            try {
-                const response = await fetch('/api/registry', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(newItem)
-                });
+            let registry = getRegistry();
 
-                if (response.status === 409) { // Conflict, e.g., duplicate serial
-                    alert('Error: An item with this serial number already exists in the registry.');
-                    return;
-                }
-                if (!response.ok) throw new Error('Failed to save item.');
-
-                resetFormState();
-                switchPage('search-page');
-
-            } catch (error) {
-                console.error('Save error:', error);
-                alert('Failed to save the item to the database. Please try again.');
+            // Check for duplicate serial numbers before saving
+            if (registry.some(item => item.serial === newItem.serial)) {
+                alert('Error: An item with this serial number already exists in the registry.');
+                return;
             }
+
+            registry.unshift(newItem); // Add new item to the beginning of the array
+            localStorage.setItem('itg_registry', JSON.stringify(registry));
+
+            resetFormState();
+            switchPage('search-page');
         }
 
         // Function to load an item's data into the form for editing
-        async function editItem(id) {
-            const registry = await getRegistry();
+        function editItem(id) {
+            const registry = getRegistry();
             const itemToEdit = registry.find(item => item.id === id);
 
             if (itemToEdit) { 
@@ -617,13 +621,15 @@
         }
 
         // Function to update an existing item
-        async function updateItem(event, id) {
+        function updateItem(event, id) {
             event.preventDefault();
 
-            try {
-                const updatedItem = {
-                    // The ID is sent in the URL, not the body, but including it doesn't hurt.
-                    id: id, 
+            let registry = getRegistry();
+            const itemIndex = registry.findIndex(item => item.id === id);
+
+            if (itemIndex !== -1) {
+                registry[itemIndex] = {
+                    id: id, // Keep the original ID
                     serial: document.getElementById('form-serial').value.trim(),
                     countryCode: document.getElementById('form-country-code').value.trim(),
                     description: document.getElementById('form-description').value.trim(),
@@ -637,41 +643,26 @@
                     noteType: document.getElementById('form-note-type').value,
                     quality: document.getElementById('form-quality').value.trim().toUpperCase()
                 };
-
-                const response = await fetch(`/api/registry/${id}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(updatedItem)
-                });
-
-                if (!response.ok) throw new Error('Failed to update item.');
-
+                
+                localStorage.setItem('itg_registry', JSON.stringify(registry));
                 resetFormState();
                 switchPage('search-page');
-
-            } catch (error) {
-                console.error('Update error:', error);
-                alert('Failed to update the item. Please try again.');
             }
         }
 
         // Function to delete an item
-        async function deleteItem(id) {
+        function deleteItem(id) {
             if (confirm('Are you sure you want to delete this record?')) {
-                try {
-                    const response = await fetch(`/api/registry/${id}`, { method: 'DELETE' });
-                    if (!response.ok) throw new Error('Failed to delete item from server.');
-
-                    // If viewing the detail page of the deleted item, switch back to search
-                    const detailPage = document.getElementById('detail-page');
-                    if (!detailPage.classList.contains('hidden')) {
-                        switchPage('search-page');
-                    } else {
-                        initializeRegistryView(); // Otherwise, just refresh the list
-                    }
-                } catch (error) {
-                    console.error('Delete error:', error);
-                    alert('Failed to delete the record. Please try again.');
+                let registry = getRegistry();
+                const updatedRegistry = registry.filter(item => item.id !== id);
+                localStorage.setItem('itg_registry', JSON.stringify(updatedRegistry));
+                // If viewing the detail page of the deleted item, switch back to search
+                const detailPage = document.getElementById('detail-page');
+                if(!detailPage.classList.contains('hidden')) {
+                    switchPage('search-page');
+                }
+                else {
+                    renderRegistry();
                 }
             }
         }
@@ -689,16 +680,9 @@
             resetFormState();
         }
 
-        // New main initialization function to handle async data loading
-        async function initializeRegistryView() {
-            const registry = await getRegistry();
-            renderRegistry(registry, registry.length);
-        }
-
-
         // Initialize App Engine Lifecycle Hook
         window.onload = function() {
-            initializeRegistryView();
+            renderRegistry();
             setupFormPersistence();
 
             // Register Service Worker for PWA

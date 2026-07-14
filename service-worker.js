@@ -1,5 +1,5 @@
-const CACHE_NAME = 'itg-portal-cache-v1';
-const urlsToCache = [
+const CACHE_NAME = 'itg-portal-cache-v2'; // Bumped version to ensure update
+const STATIC_ASSETS = [
   '/',
   '/index.html',
   'https://cdn.tailwindcss.com',
@@ -15,19 +15,41 @@ self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then(function(cache) {
-        console.log('Opened cache');
-        return cache.addAll(urlsToCache);
+        console.log('Service Worker: Caching static assets');
+        return cache.addAll(STATIC_ASSETS);
       })
   );
 });
 
-// Cache and return requests
+// On activation, remove old caches to keep things clean.
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys().then(cacheNames => {
+      return Promise.all(
+        cacheNames.map(cacheName => {
+          if (cacheName !== CACHE_NAME) {
+            console.log('Service Worker: Clearing old cache:', cacheName);
+            return caches.delete(cacheName);
+          }
+        })
+      );
+    })
+  );
+});
+
+// Use a "Network First, falling back to Cache" strategy for navigation.
 self.addEventListener('fetch', event => {
-  event.respondWith(
-    caches.match(event.request)
-      .then(function(response) {
-        // Cache hit - return response
+  // For navigation requests (e.g., loading the page), use Network First.
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(() => caches.match(event.request))
+    );
+  } else {
+    // For static assets (CSS, fonts), use Cache First for performance.
+    event.respondWith(
+      caches.match(event.request).then(response => {
         return response || fetch(event.request);
       })
-  );
+    );
+  }
 });
